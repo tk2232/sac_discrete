@@ -7,7 +7,7 @@ import gym
 import random
 
 
-def update_target_graph():
+def copy_to_target_graph(sess):
     # Get the parameters of our DQNNetwork
     from_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, "ValueNet")
 
@@ -19,7 +19,16 @@ def update_target_graph():
     # Update our target_network parameters with DQNNetwork parameters
     for from_var, to_var in zip(from_vars, to_vars):
         op_holder.append(to_var.assign(from_var))
-    return op_holder
+    sess.run(op_holder)
+    
+def update_target_graph(sess, tau=0.005):
+    source_params = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, "ValueNet")
+    target_params = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, "ValueNetTarget")
+    target_update_op = [
+        tf.assign(target, (1 - tau) * target + tau * source)
+        for target, source in zip(target_params, source_params)
+    ]
+    sess.run(target_update_op)
 
 
 def _params(scope):
@@ -150,13 +159,13 @@ sess = tf.Session(config=config)
 
 value_net = ValueNet(sess, state_space, hidden_dim, 'ValueNet')
 value_net_target = ValueNet(sess, state_space, hidden_dim, 'ValueNetTarget')
-update_target_graph()
 
 soft_q_net_1 = SoftQNetwork(sess, state_space, action_space, hidden_dim, 'soft_q_1')
 soft_q_net_2 = SoftQNetwork(sess, state_space, action_space, hidden_dim, 'soft_q_2')
 
 policy_net = PolicyNet(sess, state_space, action_space, hidden_dim)
 sess.run(tf.initializers.global_variables())
+copy_to_target_graph(sess)
 
 replay_buffer = ReplayBuffer(1000000)
 
@@ -191,15 +200,13 @@ def soft_q_update(batch_size, frame_idx):
     value_net.update(state, v_target)
     policy_net.update(state, action, policy_target)
 
-    if frame_idx % 1 == 0:
-        update_target_graph()
-
 
 max_frames = 10000
 max_steps = 500
 frame_idx = 0
 rewards = []
-batch_size = 256
+batch_size = 128
+updates = 0
 
 while frame_idx < max_frames:
     s = env.reset()
@@ -210,12 +217,16 @@ while frame_idx < max_frames:
         s_, r, d, _ = env.step(action)
         replay_buffer.push(s, action, r, s_, d)
 
-        if len(replay_buffer) > batch_size and frame_idx % 1 == 0:
-            soft_q_update(batch_size, frame_idx)
-
         s = s_
         episode_reward += r
         frame_idx += 1
+
+        if len(replay_buffer) > batch_size:
+            soft_q_update(batch_size, frame_idx)
+            updates += 1
+
+            if updates % 10 == 0:
+                update_target_graph(sess)
 
         if d:
             print('Reward: ', episode_reward)
